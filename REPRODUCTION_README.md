@@ -12,21 +12,23 @@
 - 在 `ragnet` Conda 环境中跑通 AffordanceVLM-7B 单图推理。
 - 下载并校验 RAGNet 官方数据包。
 - 从 HANDAL 官方来源补齐 17 类 without-depth 数据。
-- 跑完 7 个约 1,000 样本的官方验证集。
-- 将完整 HANDAL（65,827 张）评估提交到 TIGRIS 独占 GH200。
+- 跑完 7 个约 1,000 样本的官方验证集，以及完整 HANDAL（65,827 张）
+  评估；完整 HANDAL 为 GIoU 60.83 / cIoU 60.53。
 - 下载 LLaVA-Lightning-7B-v1-1 训练基座。
-- 下载公开可直接获取的 LISA 训练资产，并提交 CPU 解压任务。
+- 下载并校验全部训练资产，包括 Mapillary Vistas v2.0 的 18,000 张
+  训练图像与标签。
 - 完成 TIGRIS 一节点一 GH200 的多节点 DeepSpeed 训练脚本。
 - 完成 2×GH200、2 step 的分布式训练 smoke test 和 ZeRO-2 checkpoint。
+- 提交 8×GH200、每卡 batch 40、global batch 320 的正式训练任务
+  `23269`。
 
 尚未完成：
 
-- 当前完整 HANDAL 作业 `23247` 仍在运行，最终指标尚未写入本文。
-- Mapillary Vistas v2.0 需要用户登录并接受数据条款，尚未下载。
-- 尚未启动 8×GH200 的正式论文配置训练。
+- 正式训练任务 `23269` 正在等待 8 张 GH200 同时可用；尚未产生完整
+  训练 checkpoint 和训练后评估结果。
 
-当前结论：**官方 checkpoint 的推理和评估链路已经复现；多节点训练
-链路也已跑通，正式论文配置训练只差 Mapillary 授权数据。**
+当前结论：**官方 checkpoint 的推理与评估链路已经复现；完整训练数据
+和多节点训练链路均已验证，正式 B320 训练已进入 Slurm 队列。**
 
 ## 2. 项目在做什么
 
@@ -63,7 +65,9 @@ flowchart LR
 | 文件 | 作用 | 当前状态 |
 |---|---|---|
 | [`model/AffordanceVLM.py`](model/AffordanceVLM.py) | AffordanceVLM 主模型；连接 LLaVA、`[AFF]` embedding 和 SAM；定义 CE/BCE/Dice loss | 官方核心代码 |
-| [`train_aff.py`](train_aff.py) | 参数解析、数据集构建、DeepSpeed 初始化、训练循环和验证指标 | 已增加 TIGRIS eval-only 适配 |
+| [`model/llava/model/llava_arch.py`](model/llava/model/llava_arch.py) | LLaVA 图文融合、vision tower 与 multimodal projector | 官方基础代码 |
+| [`model/segment_anything/modeling/`](model/segment_anything/modeling/) | SAM image encoder、prompt encoder 和 mask decoder | 官方基础代码 |
+| [`train_aff.py`](train_aff.py) | 训练/评测总入口；模型与数据、DeepSpeed、训练循环、checkpoint 和验证指标 | 已增加 TIGRIS 适配 |
 | [`utils/dataset.py`](utils/dataset.py) | 混合训练数据集、batch collate、conversation tokenization | 官方核心代码 |
 | [`utils/aff_seg_dataset.py`](utils/aff_seg_dataset.py) | 普通 affordance 训练/验证数据；HANDAL、GraspNet、3DOI 等 | 官方核心代码 |
 | [`utils/reason_aff_dataset.py`](utils/reason_aff_dataset.py) | reasoning-based affordance 训练/验证数据 | 官方核心代码 |
@@ -119,6 +123,19 @@ flowchart LR
 - 基座配置：LLaVA-Lightning-7B-v1-1。
 - hidden size：4096。
 - checkpoint 已经是合并后的完整模型；评估时使用 `--lora_r 0`，避免再次注入随机 LoRA 层。
+
+### LLaVA 训练基座
+
+- 正式训练从 LLaVA-Lightning-7B-v1-1 初始化，而不是从已训练好的
+  AffordanceVLM baseline 继续训练。
+- 本地目录：
+
+  ```text
+  /shared/rc/mairl/results/ragnet-reproduction/models/LLaVA-Lightning-7B-v1-1
+  ```
+
+- 大小：约 13 GB；由 `scripts/train_tigris_worker.sh` 的 `--version`
+  传给 `train_aff.py`。
 
 ### CLIP vision tower
 
@@ -209,11 +226,19 @@ conda activate ragnet
 | 内容 | 位置 | 说明 |
 |---|---|---|
 | Git 仓库和 Conda 环境 | `/home/dg5804` | 小文件、代码、环境 |
-| 原始数据 | `/shared/rc/mairl/datasets/ragnet/raw` | MAIRL 持久化存储，约 123 GB |
-| 解压数据 | `/shared/rc/mairl/datasets/ragnet/processed/data` | MAIRL 持久化存储，约 127 GB |
+| 原始数据 | `/shared/rc/mairl/datasets/ragnet/raw` | MAIRL 持久化存储，约 186 GB |
+| 解压数据 | `/shared/rc/mairl/datasets/ragnet/processed/data` | MAIRL 持久化存储，约 199 GB |
 | 模型和实验结果 | `/shared/rc/mairl/results/ragnet-reproduction` | MAIRL 持久化存储 |
 | 高频小型验证子集 | `/scratch/dg5804/ragnet/data` | Scratch，约 4.9 GB，可能按集群策略清理 |
 | HF/编译缓存 | `/scratch/dg5804/ragnet/cache` | 可重新生成 |
+
+训练和评估统一从仓库内的 `data` 读取；它不是数据副本，而是指向 MAIRL
+持久化目录的软链接：
+
+```text
+/home/dg5804/projects/ragnet-reproduction/data
+  -> /shared/rc/mairl/datasets/ragnet/processed/data
+```
 
 不要把唯一 checkpoint 或唯一实验结果只放在 Scratch。
 
@@ -304,7 +329,7 @@ conda activate ragnet
 /shared/rc/mairl/datasets/ragnet/processed/data/lisa_data
 ```
 
-已下载并正在解压/转换：
+已下载、解压并通过 `scripts/check_training_assets.py` 检查：
 
 - ADE20K、COCO 2017、COCO-Stuff。
 - Pascal-Part、PASCAL VOC 2010、PACO-LVIS。
@@ -312,37 +337,27 @@ conda activate ragnet
 - COCO 2014 图像和 RefCLEF `saiapr_tc-12` 图像。
 - LLaVA-Instruct-150K annotations。
 - ReasonSeg train/val/test 和 explanatory annotations。
+- Mapillary Vistas v2.0。
 
 RefCLEF 的原 UNC 下载主机已经失效，因此图像 zip 来自
-`cxz0416/saiapr_tc` 镜像；解压后应检查是否为官方 REFER README 所述的
-19,997 张图像。
+`cxz0416/saiapr_tc` 镜像；已核对官方 REFER metadata 引用的
+19,997/19,997 张图像。
 
-当前唯一明确未完成的是 Mapillary Vistas v2.0。该数据需要登录并接受
-CC BY-NC-SA 及 Mapillary 条款；在未完成授权前不能声称正式训练与论文
-数据完全一致。
-
-需要用户亲自在浏览器完成一次条款接受：
+Mapillary 的关键目录：
 
 ```text
-https://huggingface.co/datasets/candylion/mapillary-vistas-v2
+/shared/rc/mairl/datasets/ragnet/processed/data/lisa_data/mapillary/
+├── config_v2.0.json
+└── training/
+    ├── images/          # 18,000 JPG
+    └── v2.0/labels/     # 18,000 PNG
 ```
 
-随后在 TIGRIS 登录节点登录同一个 Hugging Face 账号：
+其 gated 原始包保存在：
 
-```bash
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate ragnet
-hf auth login
-```
-
-登录后可以继续：
-
-```bash
-# 登录节点只下载约 29.3 GB 的 gated zip
-bash scripts/prepare_training_assets.sh mapillary-fetch
-
-# 计算节点校验并解压
-sbatch --parsable scripts/prepare_training_assets.sbatch mapillary-extract
+```text
+/shared/rc/mairl/datasets/ragnet/raw/lisa/
+└── mapillary-vistas-dataset_public_v2.0.zip
 ```
 
 ## 7. 评估实现到底输入和输出什么
@@ -421,7 +436,7 @@ easy 问题通常直接给出对象线索，例如寻找锤子；hard 问题可�
 | HANDAL easy reasoning | 1,003 | 59.27 | 58.83 | 58.3 | 58.1 |
 | HANDAL hard reasoning | 1,003 | 58.98 | 58.72 | 58.2 | 57.8 |
 | 3DOI easy reasoning | 1,012 | 37.87 | 38.94 | 38.1 | 39.4 |
-| HANDAL full | 65,827 | 运行中 | 运行中 | 60.3 | 60.8 |
+| HANDAL full | 65,827 | 60.83 | 60.53 | 60.3 | 60.8 |
 
 3DOI 的两个原始 pickle 各有 1,013 条记录；官方代码跳过损坏的
 `EK_frame_0000040462.jpg`，实际各评估 1,012 条。
@@ -429,8 +444,8 @@ easy 问题通常直接给出对象线索，例如寻找锤子；hard 问题可�
 GraspNet novel 本次结果比论文高约 1.7/2.4 个百分点。其余结果与论文
 非常接近，说明 checkpoint、数据、输入模板、SAM 和指标链路已经连通。
 
-注意：下载的 checkpoint 目录中原本就带有一条 `handal_all` 结果。
-在作业 `23247` 结束前，不要把那条旧记录误认为本次完整 HANDAL 重跑结果。
+下载的 checkpoint 目录中原本就带有一条 `handal_all` 结果；本次完整
+重跑是作业 `23247` 最后追加的 60.83 / 60.53，耗时 2:15:19，exit 0。
 
 ## 9. 如何运行评估
 
@@ -549,8 +564,8 @@ Sure, [AFF] .
 
 ## 11. 训练配置与 TIGRIS 启动方式
 
-官方入口是 [`scripts/train.sh`](scripts/train.sh)，但发布脚本和论文描述有
-两处重要不一致：
+官方入口是 [`scripts/train.sh`](scripts/train.sh)，但发布脚本、论文配置
+和 TIGRIS 拓扑之间存在几处重要差异：
 
 | 配置 | 论文 | 发布脚本的实际含义 | 本次 TIGRIS 配置 |
 |---|---:|---:|---:|
@@ -617,7 +632,7 @@ bash scripts/train.sh
 | `23253` | RefCLEF 图像校验和解压 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-refclef-23253.out` |
 | `23265` | Mapillary v2.0 校验和解压 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-mapillary-23265.out` |
 | `23267` | Mapillary 专项真实数据加载 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-mapillary-smoke-23267.out` |
-| `23269` | 正式 B320 训练 | 8×GH200 | 已提交 | `logs/ragnet-train-23269.out` |
+| `23269` | 正式 B320 训练 | 8×GH200 | 已提交，等待资源 | `logs/ragnet-train-23269.out` |
 | `23256` | 六类训练 data loader smoke | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-data-smoke-23256.out` |
 | `23258` | 分布式训练 smoke | 2 节点×1 GH200 | 完成，2 次 forward/backward/step，exit 0 | `logs/ragnet-smoke-23258.out` |
 
@@ -722,13 +737,18 @@ python merge_lora_weights_and_save_hf_model.py \
 │   ├── smoke-test/
 │   └── tensorboard/
 ├── logs/
-│   └── ragnet-handall-23247.out
+│   ├── ragnet-handall-23247.out
+│   └── ragnet-train-23269.out
 ├── manifests/
 │   └── smoke-test-2026-07-30.md
-└── models/
-    ├── AffordanceVLM-7B/
-    │   └── eval_result.txt
-    └── sam_vit_h_4b8939.pth
+├── models/
+│   ├── AffordanceVLM-7B/
+│   │   └── eval_result.txt
+│   ├── LLaVA-Lightning-7B-v1-1/
+│   └── sam_vit_h_4b8939.pth
+└── runs/
+    ├── smoke-2gh200-20260730-v3/
+    └── ragnet-b320-8gh200/
 ```
 
 ## 14. 接下来改进时最值得关注的位置
@@ -785,8 +805,10 @@ tail \
   /shared/rc/mairl/results/ragnet-reproduction/models/AffordanceVLM-7B/eval_result.txt
 ```
 
-查看完整 HANDAL 作业：
+查看正式训练状态和日志：
 
 ```bash
-squeue -j 23247
+squeue -j 23269
+tail -f \
+  /shared/rc/mairl/results/ragnet-reproduction/logs/ragnet-train-23269.out
 ```
