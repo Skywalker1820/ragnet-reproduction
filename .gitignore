@@ -1,0 +1,40 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local Python environments
+.venv/
+venv/
+.env
+.env.*
+
+# Editors and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+
+# Local datasets, checkpoints, and experiment outputs
+/data/
+/ckpts/
+/checkpoints/
+/exps/
+/runs/
+/logs/
+/evaluations/
+/gradio_images/
+/wandb/
+
+# Model weights and training artifacts
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+events.out.tfevents.*
+
+# Slurm and application logs
+slurm-*.out
+*.log

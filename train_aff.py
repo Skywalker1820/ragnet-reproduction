@@ -167,8 +167,9 @@ def main(args):
     model.config.bos_token_id = tokenizer.bos_token_id
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    model.enable_input_require_grads()
-    model.gradient_checkpointing_enable()
+    if not args.eval_only:
+        model.enable_input_require_grads()
+        model.gradient_checkpointing_enable()
 
     model.get_model().initialize_vision_modules(model.get_model().config)
     vision_tower = model.get_model().get_vision_tower()
@@ -241,30 +242,35 @@ def main(args):
 
     world_size = torch.cuda.device_count()
     args.distributed = world_size > 1
-    train_dataset = HybridDataset(
-        args.dataset_dir,
-        tokenizer,
-        args.vision_tower,
-        samples_per_epoch=args.batch_size
-        * args.grad_accumulation_steps
-        * args.steps_per_epoch
-        * world_size,
-        precision=args.precision,
-        image_size=args.image_size,
-        num_classes_per_sample=args.num_classes_per_sample,
-        exclude_val=args.exclude_val,
-        dataset=args.dataset,
-        sample_rate=[float(x) for x in args.sample_rates.split(",")],
-        sem_seg_data=args.sem_seg_data,
-        refer_seg_data=args.refer_seg_data,
-        vqa_data=args.vqa_data,
-        reason_seg_data=args.reason_seg_data,
-        aff_seg_data=args.aff_seg_data,
-        aff_sample_rate=[float(x) for x in args.aff_sample_rates.split(",")],
-        reason_aff_data=args.reason_aff_data,
-        reason_aff_sample_rate=[float(x) for x in args.reason_aff_sample_rates.split(",")],
-        explanatory=args.explanatory,
-    )
+    if args.eval_only:
+        train_dataset = None
+    else:
+        train_dataset = HybridDataset(
+            args.dataset_dir,
+            tokenizer,
+            args.vision_tower,
+            samples_per_epoch=args.batch_size
+            * args.grad_accumulation_steps
+            * args.steps_per_epoch
+            * world_size,
+            precision=args.precision,
+            image_size=args.image_size,
+            num_classes_per_sample=args.num_classes_per_sample,
+            exclude_val=args.exclude_val,
+            dataset=args.dataset,
+            sample_rate=[float(x) for x in args.sample_rates.split(",")],
+            sem_seg_data=args.sem_seg_data,
+            refer_seg_data=args.refer_seg_data,
+            vqa_data=args.vqa_data,
+            reason_seg_data=args.reason_seg_data,
+            aff_seg_data=args.aff_seg_data,
+            aff_sample_rate=[float(x) for x in args.aff_sample_rates.split(",")],
+            reason_aff_data=args.reason_aff_data,
+            reason_aff_sample_rate=[
+                float(x) for x in args.reason_aff_sample_rates.split(",")
+            ],
+            explanatory=args.explanatory,
+        )
 
     if args.no_eval == False:
         if args.eval_affordance:
@@ -291,9 +297,12 @@ def main(args):
                 args.val_dataset,
                 args.image_size,
             )
-        print(
-            f"Training with {len(train_dataset)} examples and validating with {len(val_dataset)} examples."
-        )
+        if args.eval_only:
+            print(f"Validating with {len(val_dataset)} examples.")
+        else:
+            print(
+                f"Training with {len(train_dataset)} examples and validating with {len(val_dataset)} examples."
+            )
     else:
         val_dataset = None
         print(f"Training with {len(train_dataset)} examples.")
@@ -335,19 +344,37 @@ def main(args):
             "allgather_bucket_size": 5e8,
         },
     }
-    model_engine, optimizer, train_loader, scheduler = deepspeed.initialize(
-        model=model,
-        model_parameters=model.parameters(),
-        training_data=train_dataset,
-        collate_fn=partial(
-            collate_fn,
-            tokenizer=tokenizer,
-            conv_type=args.conv_type,
-            use_mm_start_end=args.use_mm_start_end,
-            local_rank=args.local_rank,
-        ),
-        config=ds_config,
-    )
+    if args.eval_only:
+        eval_ds_config = {
+            "train_micro_batch_size_per_gpu": 1,
+            "bf16": {
+                "enabled": args.precision == "bf16",
+            },
+            "fp16": {
+                "enabled": args.precision == "fp16",
+            },
+            "zero_optimization": {
+                "stage": 0,
+            },
+        }
+        model_engine, optimizer, train_loader, scheduler = deepspeed.initialize(
+            model=model,
+            config=eval_ds_config,
+        )
+    else:
+        model_engine, optimizer, train_loader, scheduler = deepspeed.initialize(
+            model=model,
+            model_parameters=model.parameters(),
+            training_data=train_dataset,
+            collate_fn=partial(
+                collate_fn,
+                tokenizer=tokenizer,
+                conv_type=args.conv_type,
+                use_mm_start_end=args.use_mm_start_end,
+                local_rank=args.local_rank,
+            ),
+            config=ds_config,
+        )
 
     # resume deepspeed checkpoint
     if args.auto_resume and len(args.resume) == 0:
@@ -390,7 +417,7 @@ def main(args):
             ),
         )
 
-    train_iter = iter(train_loader)
+    train_iter = None if args.eval_only else iter(train_loader)
     best_score, cur_ciou = 0.0, 0.0
 
     if args.eval_only:

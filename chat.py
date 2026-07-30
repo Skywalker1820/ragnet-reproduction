@@ -43,6 +43,18 @@ def parse_args(args):
         type=str,
         choices=["llava_v1", "llava_llama_2"],
     )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="run one non-interactive inference turn with this prompt",
+    )
+    parser.add_argument(
+        "--image",
+        type=str,
+        default=None,
+        help="image path for non-interactive inference",
+    )
     return parser.parse_args(args)
 
 
@@ -65,6 +77,9 @@ def preprocess(
 
 def main(args):
     args = parse_args(args)
+    if (args.prompt is None) != (args.image is None):
+        raise ValueError("--prompt and --image must be provided together")
+    single_turn = args.prompt is not None
     os.makedirs(args.vis_save_path, exist_ok=True)
 
     # Create model
@@ -157,7 +172,7 @@ def main(args):
         conv = conversation_lib.conv_templates[args.conv_type].copy()
         conv.messages = []
 
-        prompt = input("Please input your prompt: ")
+        prompt = args.prompt if single_turn else input("Please input your prompt: ")
         prompt = DEFAULT_IMAGE_TOKEN + "\n" + "You are an embodied robot. " + prompt
         if args.use_mm_start_end:
             replace_token = (
@@ -169,8 +184,10 @@ def main(args):
         conv.append_message(conv.roles[1], "")
         prompt = conv.get_prompt()
 
-        image_path = input("Please input the image path: ")
+        image_path = args.image if single_turn else input("Please input the image path: ")
         if not os.path.exists(image_path):
+            if single_turn:
+                raise FileNotFoundError("File not found in {}".format(image_path))
             print("File not found in {}".format(image_path))
             continue
 
@@ -249,6 +266,9 @@ def main(args):
             save_img = cv2.cvtColor(save_img, cv2.COLOR_RGB2BGR)
             cv2.imwrite(save_path, save_img)
             print("{} has been saved.".format(save_path))
+
+        if single_turn:
+            break
 
 
 if __name__ == "__main__":
