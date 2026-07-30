@@ -20,4 +20,4 @@ export TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 
 cd /home/dg5804/projects/ragnet-reproduction
-python -u -m scripts.smoke_training_data
+python -u -m scripts.smoke_training_data "$@"

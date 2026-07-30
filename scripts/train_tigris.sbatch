@@ -45,17 +45,11 @@ MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
 export MASTER_PORT="${MASTER_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"
 export WORLD_SIZE="${SLURM_NTASKS}"
 
-# Paper target: global batch size 40. The released train.sh passes 40 as a
-# per-device batch, but train_aff.py defines the option per GPU.
-if [[ -z "${RAGNET_BATCH_SIZE:-}" ]]; then
-    if (( 40 % WORLD_SIZE != 0 )); then
-        echo "WORLD_SIZE=${WORLD_SIZE} does not divide global batch 40." >&2
-        exit 1
-    fi
-    export RAGNET_BATCH_SIZE="$((40 / WORLD_SIZE))"
-fi
+# Match the released train.sh: batch_size is per GPU, so 8 GPUs produce an
+# effective global batch of 320 before gradient accumulation.
+export RAGNET_BATCH_SIZE="${RAGNET_BATCH_SIZE:-40}"
 export RAGNET_GRAD_ACCUM="${RAGNET_GRAD_ACCUM:-1}"
-export RAGNET_EXP_NAME="${RAGNET_EXP_NAME:-ragnet-paper-${WORLD_SIZE}gh200}"
+export RAGNET_EXP_NAME="${RAGNET_EXP_NAME:-ragnet-b320-${WORLD_SIZE}gh200}"
 
 echo "nodes=${SLURM_NNODES} world_size=${WORLD_SIZE} batch_per_gpu=${RAGNET_BATCH_SIZE}"
 echo "global_batch=$((WORLD_SIZE * RAGNET_BATCH_SIZE * RAGNET_GRAD_ACCUM))"

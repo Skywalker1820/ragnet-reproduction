@@ -73,8 +73,8 @@ flowchart LR
 | [`scripts/evaluate_tigris.sh`](scripts/evaluate_tigris.sh) | 我们在 TIGRIS 上使用的统一评估入口 | 已验证 |
 | [`scripts/evaluate.sh`](scripts/evaluate.sh) | 官方顺序评估脚本，路径和 CUDA 配置不适合直接在 TIGRIS 运行 | 仅供参考 |
 | [`scripts/train.sh`](scripts/train.sh) | 官方单机 8 GPU 训练命令 | 仅供参考 |
-| [`scripts/train_tigris.sbatch`](scripts/train_tigris.sbatch) | TIGRIS 多节点资源、CUDA、缓存和全局 batch 配置 | 已提交 smoke test |
-| [`scripts/train_tigris_worker.sh`](scripts/train_tigris_worker.sh) | 每个 Slurm task 启动一个训练进程 | 已提交 smoke test |
+| [`scripts/train_tigris.sbatch`](scripts/train_tigris.sbatch) | TIGRIS 多节点资源、CUDA、缓存和全局 batch 配置 | 正式训练入口 |
+| [`scripts/train_tigris_worker.sh`](scripts/train_tigris_worker.sh) | 每个 Slurm task 启动一个训练进程 | 正式训练使用 |
 | [`scripts/prepare_training_assets.sh`](scripts/prepare_training_assets.sh) | 登录节点下载、计算节点离线校验/解压训练资产 | 使用中 |
 | [`scripts/check_training_assets.py`](scripts/check_training_assets.py) | 检查完整训练混合所需的目录、文件数和模型 shard | 已实现 |
 | [`merge_lora_weights_and_save_hf_model.py`](merge_lora_weights_and_save_hf_model.py) | 将训练后的 LoRA/DeepSpeed 权重导出为 Hugging Face checkpoint | 尚未在本次复现中使用 |
@@ -559,8 +559,8 @@ Sure, [AFF] .
 | DeepSpeed | 未单列 | ZeRO stage 2 | ZeRO stage 2 |
 | Epochs | 10 | 10 | 10 |
 | Steps per epoch | 500 | 500 | 500 |
-| Global batch | 40 | `40 × 8 = 320` | 40 |
-| Micro-batch / GPU | 5 | 40 | 5 |
+| Global batch | 40 | `40 × 8 = 320` | 320 |
+| Micro-batch / GPU | 5 | 40 | 40 |
 | Gradient accumulation | 1 | 1 | 1 |
 | Optimizer | AdamW | AdamW | AdamW |
 | Learning rate | 2e-5 | 未传参，落到默认 3e-4 | 2e-5 |
@@ -568,8 +568,9 @@ Sure, [AFF] .
 | LoRA | rank 8 | `q_proj,v_proj` | `q_proj,v_proj` |
 
 `train_aff.py` 明确将 `--batch_size` 定义为每卡每 step 的
-micro-batch，因此不能把发布脚本中的 `40` 直接搬到 8 张卡。我们的目标
-是复现论文配置，故使用 `8 × 5 × 1 = 40`。
+micro-batch。论文写的是 global batch 40，但发布脚本实际形成
+`8 × 40 × 1 = 320`。本次按发布代码的语义使用每卡 40；这更接近
+官方脚本，但与论文表述存在差异，因此实验记录中明确标记为 B320。
 
 训练混合数据及顶层采样权重：
 
@@ -597,7 +598,8 @@ HANDAL hard : EgoObjects easy : EgoObjects hard
 1. 脚本硬编码 `/data/cuda/cuda-11.7`，而当前环境是 CUDA 12.4。
 2. 脚本假设一台机器上有 8 张 GPU。
 3. TIGRIS 每个 GH 节点只有一张 GH200；8 GPU 训练会跨 8 个节点。
-4. `--batch_size=40` 会在 8 卡上形成全局 batch 320，与论文描述冲突。
+4. `--batch_size=40` 会在 8 卡上形成全局 batch 320；本次保留该发布
+   脚本行为，并在实验名中标记 B320。
 5. 脚本没有显式传入论文所述的 `2e-5` learning rate。
 6. 多节点 rank 不能用单机的 `torch.cuda.device_count()` 推断。
 
@@ -613,6 +615,9 @@ bash scripts/train.sh
 |---:|---|---|---|---|
 | `23252` | 公开训练数据幂等复核 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-data-check-23252.out` |
 | `23253` | RefCLEF 图像校验和解压 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-refclef-23253.out` |
+| `23265` | Mapillary v2.0 校验和解压 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-mapillary-23265.out` |
+| `23267` | Mapillary 专项真实数据加载 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-mapillary-smoke-23267.out` |
+| `23269` | 正式 B320 训练 | 8×GH200 | 已提交 | `logs/ragnet-train-23269.out` |
 | `23256` | 六类训练 data loader smoke | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-data-smoke-23256.out` |
 | `23258` | 分布式训练 smoke | 2 节点×1 GH200 | 完成，2 次 forward/backward/step，exit 0 | `logs/ragnet-smoke-23258.out` |
 
@@ -645,15 +650,15 @@ smoke checkpoint：
 
 ### 正式 8×GH200 训练
 
-只有在以下条件同时满足后才提交：
+正式任务提交前满足了以下条件：
 
 1. `23258` 完成一次真实 forward/backward/checkpoint，并以 exit code 0
    结束（已满足）。
-2. `scripts/check_training_assets.py` 除 Mapillary 外全部通过（已满足）。
-3. Mapillary Vistas v2.0 已经通过官方或已授权入口获得并校验目录结构
-   （尚未满足）。
+2. `scripts/check_training_assets.py` 全部通过（已满足）。
+3. Mapillary Vistas v2.0 已经通过授权入口获得，18,000 张训练标签通过
+   资产检查，并完成一次真实图像/标签/token/mask collate（已满足）。
 
-届时命令为：
+本次提交命令为：
 
 ```bash
 cd /home/dg5804/projects/ragnet-reproduction
@@ -663,7 +668,7 @@ sbatch --parsable scripts/train_tigris.sbatch
 默认训练输出：
 
 ```text
-/shared/rc/mairl/results/ragnet-reproduction/runs/ragnet-paper-8gh200
+/shared/rc/mairl/results/ragnet-reproduction/runs/ragnet-b320-8gh200
 ```
 
 如未补 Mapillary 或人为删掉 RefCLEF，只能称为 reduced-mixture

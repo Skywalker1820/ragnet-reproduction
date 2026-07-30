@@ -28,7 +28,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--sem-seg-data",
-        default="ade20k||cocostuff||pascal_part||paco_lvis",
+        default="ade20k||cocostuff||pascal_part||paco_lvis||mapillary",
     )
     args = parser.parse_args()
 
