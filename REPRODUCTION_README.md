@@ -14,15 +14,19 @@
 - 从 HANDAL 官方来源补齐 17 类 without-depth 数据。
 - 跑完 7 个约 1,000 样本的官方验证集。
 - 将完整 HANDAL（65,827 张）评估提交到 TIGRIS 独占 GH200。
+- 下载 LLaVA-Lightning-7B-v1-1 训练基座。
+- 下载公开可直接获取的 LISA 训练资产，并提交 CPU 解压任务。
+- 完成 TIGRIS 一节点一 GH200 的多节点 DeepSpeed 训练脚本。
+- 完成 2×GH200、2 step 的分布式训练 smoke test 和 ZeRO-2 checkpoint。
 
 尚未完成：
 
 - 当前完整 HANDAL 作业 `23247` 仍在运行，最终指标尚未写入本文。
-- 尚未复现官方完整训练。
-- 尚未下载官方训练所需的 LISA 通用分割、ReferSeg、VQA 和 ReasonSeg 数据。
-- 官方单机 8 GPU 训练脚本尚未改写为 TIGRIS 多节点版本。
+- Mapillary Vistas v2.0 需要用户登录并接受数据条款，尚未下载。
+- 尚未启动 8×GH200 的正式论文配置训练。
 
-当前结论：**官方 checkpoint 的推理和评估链路已经复现；完整训练链路还没有复现。**
+当前结论：**官方 checkpoint 的推理和评估链路已经复现；多节点训练
+链路也已跑通，正式论文配置训练只差 Mapillary 授权数据。**
 
 ## 2. 项目在做什么
 
@@ -68,11 +72,15 @@ flowchart LR
 | [`app.py`](app.py) | Gradio demo | 尚未作为复现主入口 |
 | [`scripts/evaluate_tigris.sh`](scripts/evaluate_tigris.sh) | 我们在 TIGRIS 上使用的统一评估入口 | 已验证 |
 | [`scripts/evaluate.sh`](scripts/evaluate.sh) | 官方顺序评估脚本，路径和 CUDA 配置不适合直接在 TIGRIS 运行 | 仅供参考 |
-| [`scripts/train.sh`](scripts/train.sh) | 官方单机 8 GPU 训练命令 | 尚未适配 TIGRIS |
+| [`scripts/train.sh`](scripts/train.sh) | 官方单机 8 GPU 训练命令 | 仅供参考 |
+| [`scripts/train_tigris.sbatch`](scripts/train_tigris.sbatch) | TIGRIS 多节点资源、CUDA、缓存和全局 batch 配置 | 已提交 smoke test |
+| [`scripts/train_tigris_worker.sh`](scripts/train_tigris_worker.sh) | 每个 Slurm task 启动一个训练进程 | 已提交 smoke test |
+| [`scripts/prepare_training_assets.sh`](scripts/prepare_training_assets.sh) | 登录节点下载、计算节点离线校验/解压训练资产 | 使用中 |
+| [`scripts/check_training_assets.py`](scripts/check_training_assets.py) | 检查完整训练混合所需的目录、文件数和模型 shard | 已实现 |
 | [`merge_lora_weights_and_save_hf_model.py`](merge_lora_weights_and_save_hf_model.py) | 将训练后的 LoRA/DeepSpeed 权重导出为 Hugging Face checkpoint | 尚未在本次复现中使用 |
 | [`data_curation/check_dataset.py`](data_curation/check_dataset.py) | 校验官方 pickle 引用的数据是否存在 | 已验证通过 |
 
-### 我们对 `train_aff.py` 的最小修改
+### 我们对训练代码的最小修改
 
 `--eval_only` 时：
 
@@ -82,6 +90,18 @@ flowchart LR
 - 使用 DeepSpeed ZeRO stage 0 做单 GPU 评估。
 
 这些修改只绕开评估时不需要的训练初始化，不改变模型预测、mask 后处理或 GIoU/cIoU 计算。
+
+多节点训练时：
+
+- 从 Slurm/torch distributed 环境读取全局 `RANK`、`WORLD_SIZE` 和节点内
+  `LOCAL_RANK`。
+- 只允许全局 rank 0 写 TensorBoard、meta log 和公共 checkpoint。
+- 用全局 world size 计算训练 epoch 的样本数。
+- 修正 `utils/dataset.py` 中只适用于字面路径 `./data` 的字符串替换，
+  使 MAIRL 绝对路径稳定解析到 `lisa_data`。
+- 在 BF16 训练中，将 SAM image embedding、dense positional embedding 和
+  prompt embedding 显式对齐到 mask decoder dtype；解决新版
+  PyTorch/DeepSpeed 下的 `float != bfloat16` 矩阵乘错误。
 
 ## 4. 模型与 checkpoint
 
@@ -174,8 +194,8 @@ conda activate ragnet
 
 - 官方 [`requirements.txt`](requirements.txt) 仍固定到 PyTorch 1.13.1 + CUDA 11.7，不应在当前环境中重新无脑执行，否则可能降级已经验证的 PyTorch。
 - TIGRIS 是 Linux AArch64；PyTorch/torchvision wheel 可用性与常见 x86_64 机器不同。
-- 当前没有安装 FlashAttention，但所有已完成推理和评估都不需要它。
-- 完整训练前再单独验证适合 AArch64、PyTorch 2.5.1 和 CUDA 12.4 的 FlashAttention。
+- 当前没有安装 FlashAttention；RAGNet 的 `train_aff.py` 不导入 LLaVA 的
+  `train_mem.py` monkey patch，因此本次推理、评估和训练入口都不依赖它。
 - 检查当前环境是否存在依赖冲突：
 
   ```bash
@@ -270,17 +290,60 @@ conda activate ragnet
 └── 3doi_easy_reasoning_val.pkl
 ```
 
-### 完整训练仍缺少的数据
+### LISA 通用训练资产
 
-官方 `scripts/train.sh` 还使用以下 LISA 数据，它们目前不在
-`/shared/rc/mairl/datasets/ragnet/processed/data`：
+原始压缩包：
 
-- ADE20K、COCO-Stuff、Pascal-Part、PACO-LVIS、Mapillary。
-- RefCOCO、RefCOCO+、RefCOCOg、RefCLEF。
-- LLaVA Instruct/VQA 数据。
-- ReasonSeg。
+```text
+/shared/rc/mairl/datasets/ragnet/raw/lisa
+```
 
-因此，**当前数据足以复现官方 affordance 评估，但不足以直接复现官方完整混合训练。**
+解压目标：
+
+```text
+/shared/rc/mairl/datasets/ragnet/processed/data/lisa_data
+```
+
+已下载并正在解压/转换：
+
+- ADE20K、COCO 2017、COCO-Stuff。
+- Pascal-Part、PASCAL VOC 2010、PACO-LVIS。
+- RefCOCO、RefCOCO+、RefCOCOg、RefCLEF metadata。
+- COCO 2014 图像和 RefCLEF `saiapr_tc-12` 图像。
+- LLaVA-Instruct-150K annotations。
+- ReasonSeg train/val/test 和 explanatory annotations。
+
+RefCLEF 的原 UNC 下载主机已经失效，因此图像 zip 来自
+`cxz0416/saiapr_tc` 镜像；解压后应检查是否为官方 REFER README 所述的
+19,997 张图像。
+
+当前唯一明确未完成的是 Mapillary Vistas v2.0。该数据需要登录并接受
+CC BY-NC-SA 及 Mapillary 条款；在未完成授权前不能声称正式训练与论文
+数据完全一致。
+
+需要用户亲自在浏览器完成一次条款接受：
+
+```text
+https://huggingface.co/datasets/candylion/mapillary-vistas-v2
+```
+
+随后在 TIGRIS 登录节点登录同一个 Hugging Face 账号：
+
+```bash
+source "$HOME/miniconda3/etc/profile.d/conda.sh"
+conda activate ragnet
+hf auth login
+```
+
+登录后可以继续：
+
+```bash
+# 登录节点只下载约 29.3 GB 的 gated zip
+bash scripts/prepare_training_assets.sh mapillary-fetch
+
+# 计算节点校验并解压
+sbatch --parsable scripts/prepare_training_assets.sbatch mapillary-extract
+```
 
 ## 7. 评估实现到底输入和输出什么
 
@@ -484,26 +547,29 @@ Sure, [AFF] .
 
 预测区域覆盖了杯子把手。
 
-## 11. 官方训练配置
+## 11. 训练配置与 TIGRIS 启动方式
 
-官方入口是 [`scripts/train.sh`](scripts/train.sh)，主要配置为：
+官方入口是 [`scripts/train.sh`](scripts/train.sh)，但发布脚本和论文描述有
+两处重要不一致：
 
-| 配置 | 官方值 |
-|---|---:|
-| GPU | 单机 8 GPU：`localhost:0...7` |
-| Precision | BF16 |
-| DeepSpeed | ZeRO stage 2 |
-| Epochs | 10 |
-| Steps per epoch | 500 |
-| Batch size | 40 / GPU / step |
-| Gradient accumulation | 1 |
-| Optimizer | AdamW |
-| Learning rate | 3e-4 |
-| Warmup | 100 steps |
-| LoRA | rank 8，作用于 `q_proj,v_proj` |
-| CE loss weight | 1.0 |
-| Mask BCE weight | 2.0 |
-| Mask Dice weight | 0.5 |
+| 配置 | 论文 | 发布脚本的实际含义 | 本次 TIGRIS 配置 |
+|---|---:|---:|---:|
+| GPU | 8×A100 80 GB | 单机 GPU 0–7 | 8 节点×1 GH200 |
+| Precision | BF16 | BF16 | BF16 |
+| DeepSpeed | 未单列 | ZeRO stage 2 | ZeRO stage 2 |
+| Epochs | 10 | 10 | 10 |
+| Steps per epoch | 500 | 500 | 500 |
+| Global batch | 40 | `40 × 8 = 320` | 40 |
+| Micro-batch / GPU | 5 | 40 | 5 |
+| Gradient accumulation | 1 | 1 | 1 |
+| Optimizer | AdamW | AdamW | AdamW |
+| Learning rate | 2e-5 | 未传参，落到默认 3e-4 | 2e-5 |
+| Warmup | 100 steps | 100 steps | 100 steps |
+| LoRA | rank 8 | `q_proj,v_proj` | `q_proj,v_proj` |
+
+`train_aff.py` 明确将 `--batch_size` 定义为每卡每 step 的
+micro-batch，因此不能把发布脚本中的 `40` 直接搬到 8 张卡。我们的目标
+是复现论文配置，故使用 `8 × 5 × 1 = 40`。
 
 训练混合数据及顶层采样权重：
 
@@ -526,14 +592,14 @@ HANDAL hard : EgoObjects easy : EgoObjects hard
       1     :        1        :        1
 ```
 
-### 为什么现在不能直接运行官方 `train.sh`
+### 为什么不能直接运行官方 `train.sh`
 
 1. 脚本硬编码 `/data/cuda/cuda-11.7`，而当前环境是 CUDA 12.4。
 2. 脚本假设一台机器上有 8 张 GPU。
 3. TIGRIS 每个 GH 节点只有一张 GH200；8 GPU 训练会跨 8 个节点。
-4. 还缺少 LISA 通用训练数据。
-5. 官方基础 LLaVA checkpoint 尚未单独放入我们的模型目录。
-6. 当前只验证了 eval-only 路径，没有完成多节点训练 smoke test。
+4. `--batch_size=40` 会在 8 卡上形成全局 batch 320，与论文描述冲突。
+5. 脚本没有显式传入论文所述的 `2e-5` learning rate。
+6. 多节点 rank 不能用单机的 `torch.cuda.device_count()` 推断。
 
 因此不要直接提交：
 
@@ -541,14 +607,67 @@ HANDAL hard : EgoObjects easy : EgoObjects hard
 bash scripts/train.sh
 ```
 
-### 建议的训练推进顺序
+### 当前训练作业
 
-1. 保留当前官方 checkpoint 和评估结果作为不可变 baseline。
-2. 先实现并验证单 GH200、小数据、少 step 的 LoRA 训练 smoke test。
-3. 补齐所需训练数据，或明确只使用 affordance 子集做方法实验。
-4. 新建 TIGRIS 专用训练脚本，不改写官方 `scripts/train.sh`。
-5. 先跑 1 GPU baseline，再决定是否扩展到 2–8 节点 DDP/DeepSpeed。
-6. 每次改动都在相同 7 个小验证集上对比，再提交完整 HANDAL。
+| Job ID | 用途 | 资源 | 配置 | 日志 |
+|---:|---|---|---|---|
+| `23252` | 公开训练数据幂等复核 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-data-check-23252.out` |
+| `23253` | RefCLEF 图像校验和解压 | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-refclef-23253.out` |
+| `23256` | 六类训练 data loader smoke | 1 CPU 节点 | 完成，exit 0 | `logs/ragnet-data-smoke-23256.out` |
+| `23258` | 分布式训练 smoke | 2 节点×1 GH200 | 完成，2 次 forward/backward/step，exit 0 | `logs/ragnet-smoke-23258.out` |
+
+首次 GPU smoke `23249` 已正确取得两个节点并启动两个 rank，但因 CUDA
+toolkit 路径没有稳定解析，在 DeepSpeed 导入阶段失败。`23257` 继续定位出
+BF16 SAM embedding 与 decoder dtype 不一致；修正后的 `23258` 完整成功。
+
+`23258` 的两步 rank-0 训练日志：
+
+```text
+Epoch: [0][1/2] Loss 11.6266  CeLoss 9.5000  MaskLoss 2.1266
+Epoch: [0][2/2] Loss  9.7699  CeLoss 8.3750  MaskLoss 1.3949
+```
+
+smoke checkpoint：
+
+```text
+/shared/rc/mairl/results/ragnet-reproduction/runs/
+└── smoke-2gh200-20260730-v3/
+    └── ckpt_model/global_step2/
+```
+
+该目录约 32 GB，包含两个 ZeRO optimizer shard 和约 30 GB 的 model state。
+
+日志根目录：
+
+```text
+/shared/rc/mairl/results/ragnet-reproduction/logs
+```
+
+### 正式 8×GH200 训练
+
+只有在以下条件同时满足后才提交：
+
+1. `23258` 完成一次真实 forward/backward/checkpoint，并以 exit code 0
+   结束（已满足）。
+2. `scripts/check_training_assets.py` 除 Mapillary 外全部通过（已满足）。
+3. Mapillary Vistas v2.0 已经通过官方或已授权入口获得并校验目录结构
+   （尚未满足）。
+
+届时命令为：
+
+```bash
+cd /home/dg5804/projects/ragnet-reproduction
+sbatch --parsable scripts/train_tigris.sbatch
+```
+
+默认训练输出：
+
+```text
+/shared/rc/mairl/results/ragnet-reproduction/runs/ragnet-paper-8gh200
+```
+
+如未补 Mapillary 或人为删掉 RefCLEF，只能称为 reduced-mixture
+ablation，不能称为论文训练复现。
 
 ## 12. 训练产物与合并
 

@@ -18,7 +18,7 @@ venv/
 .DS_Store
 
 # Local datasets, checkpoints, and experiment outputs
-/data/
+/data
 /ckpts/
 /checkpoints/
 /exps/

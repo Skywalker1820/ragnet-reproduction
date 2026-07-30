@@ -26,7 +26,12 @@ from utils.reason_aff_dataset import ReasonAffValDataset
 
 def parse_args(args):
     parser = argparse.ArgumentParser(description="LISA Model Training")
-    parser.add_argument("--local_rank", default=0, type=int, help="node rank")
+    parser.add_argument(
+        "--local_rank",
+        default=int(os.environ.get("LOCAL_RANK", 0)),
+        type=int,
+        help="GPU rank within the current node",
+    )
     parser.add_argument(
         "--version", default="liuhaotian/llava-llama-2-13b-chat-lightning-preview"
     )
@@ -117,8 +122,13 @@ def parse_args(args):
 
 def main(args):
     args = parse_args(args)
+    args.global_rank = int(os.environ.get("RANK", 0))
+    args.world_size = int(
+        os.environ.get("WORLD_SIZE", max(torch.cuda.device_count(), 1))
+    )
+    args.distributed = args.world_size > 1
     args.log_dir = os.path.join(args.log_base_dir, args.exp_name)
-    if args.local_rank == 0:
+    if args.global_rank == 0:
         os.makedirs(args.log_dir, exist_ok=True)
         writer = SummaryWriter(args.log_dir)
     else:
@@ -240,8 +250,6 @@ def main(args):
             print("n: ", n, "p.shape: ", p.shape)
             p.requires_grad = True
 
-    world_size = torch.cuda.device_count()
-    args.distributed = world_size > 1
     if args.eval_only:
         train_dataset = None
     else:
@@ -252,7 +260,7 @@ def main(args):
             samples_per_epoch=args.batch_size
             * args.grad_accumulation_steps
             * args.steps_per_epoch
-            * world_size,
+            * args.world_size,
             precision=args.precision,
             image_size=args.image_size,
             num_classes_per_sample=args.num_classes_per_sample,
@@ -422,7 +430,7 @@ def main(args):
 
     if args.eval_only:
         giou, ciou = validate(val_loader, model_engine, 0, writer, args)
-        if args.local_rank == 0:
+        if args.global_rank == 0:
             with open(os.path.join(args.version, "eval_result.txt"), "a") as f:
                 f.write(f"dataset: {args.val_dataset}, giou: {giou}, ciou: {ciou} \n")
         exit()
@@ -447,7 +455,7 @@ def main(args):
 
         if args.no_eval or is_best:
             save_dir = os.path.join(args.log_dir, "ckpt_model")
-            if args.local_rank == 0:
+            if args.global_rank == 0:
                 torch.save(
                     {"epoch": epoch},
                     os.path.join(
@@ -549,7 +557,7 @@ def train(
                 mask_dice_losses.all_reduce()
                 mask_losses.all_reduce()
 
-            if args.local_rank == 0:
+            if args.global_rank == 0:
                 progress.display(global_step + 1)
                 writer.add_scalar("train/loss", losses.avg, global_step)
                 writer.add_scalar("train/ce_loss", ce_losses.avg, global_step)
@@ -577,7 +585,7 @@ def train(
 
         if global_step != 0:
             curr_lr = scheduler.get_last_lr()
-            if args.local_rank == 0:
+            if args.global_rank == 0:
                 writer.add_scalar("train/lr", curr_lr[0], global_step)
 
     return train_iter
@@ -635,7 +643,7 @@ def validate(val_loader, model_engine, epoch, writer, args):
     ciou = iou_class[1]
     giou = acc_iou_meter.avg[1]
 
-    if args.local_rank == 0:
+    if args.global_rank == 0:
         writer.add_scalar("val/giou", giou, epoch)
         writer.add_scalar("val/ciou", ciou, epoch)
         print("giou: {:.4f}, ciou: {:.4f}".format(giou, ciou))

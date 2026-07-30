@@ -28,6 +28,14 @@ from .utils import (DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN,
 from .vqa_dataset import VQADataset
 
 
+def resolve_lisa_data_root(base_image_dir):
+    """Resolve the LISA auxiliary-data directory for relative or absolute roots."""
+    normalized = os.path.normpath(base_image_dir)
+    if os.path.basename(normalized) == "lisa_data":
+        return normalized
+    return os.path.join(normalized, "lisa_data")
+
+
 def collate_fn(
     batch, tokenizer=None, conv_type="llava_v1", use_mm_start_end=True, local_rank=-1
 ):
@@ -199,6 +207,7 @@ class HybridDataset(torch.utils.data.Dataset):
         self.sample_rate = sample_rate / sample_rate.sum()
 
         self.base_image_dir = base_image_dir
+        lisa_data_dir = resolve_lisa_data_root(base_image_dir)
         self.image_size = image_size
         self.tokenizer = tokenizer
         self.precision = precision
@@ -210,7 +219,7 @@ class HybridDataset(torch.utils.data.Dataset):
             if dataset == "sem_seg":
                 self.all_datasets.append(
                     SemSegDataset(
-                        base_image_dir.replace('./data', './data/lisa_data'),
+                        lisa_data_dir,
                         tokenizer,
                         vision_tower,
                         samples_per_epoch,
@@ -224,7 +233,7 @@ class HybridDataset(torch.utils.data.Dataset):
             elif dataset == "refer_seg":
                 self.all_datasets.append(
                     ReferSegDataset(
-                        base_image_dir.replace('./data', './data/lisa_data'),
+                        lisa_data_dir,
                         tokenizer,
                         vision_tower,
                         samples_per_epoch,
@@ -238,7 +247,7 @@ class HybridDataset(torch.utils.data.Dataset):
             elif dataset == "vqa":
                 self.all_datasets.append(
                     VQADataset(
-                        base_image_dir.replace('./data', './data/lisa_data'),
+                        lisa_data_dir,
                         tokenizer,
                         vision_tower,
                         samples_per_epoch,
@@ -252,7 +261,7 @@ class HybridDataset(torch.utils.data.Dataset):
             elif dataset == "reason_seg":
                 self.all_datasets.append(
                     ReasonSegDataset(
-                        base_image_dir.replace('./data', './data/lisa_data'),
+                        lisa_data_dir,
                         tokenizer,
                         vision_tower,
                         samples_per_epoch,
@@ -319,7 +328,7 @@ class ValDataset(torch.utils.data.Dataset):
         val_dataset,
         image_size=1024,
     ):
-        self.base_image_dir = base_image_dir.replace('./data', './data/lisa_data')
+        self.base_image_dir = resolve_lisa_data_root(base_image_dir)
         splits = val_dataset.split("|")
         if len(splits) == 2:
             ds, split = splits
@@ -341,11 +350,13 @@ class ValDataset(torch.utils.data.Dataset):
                 item = item.copy()
                 if ds == "refclef":
                     item["file_name"] = os.path.join(
-                        base_image_dir, "images/saiapr_tc-12", item["file_name"]
+                        self.base_image_dir,
+                        "images/saiapr_tc-12",
+                        item["file_name"],
                     )
                 elif ds in ["refcoco", "refcoco+", "refcocog", "grefcoco"]:
                     item["file_name"] = os.path.join(
-                        base_image_dir,
+                        self.base_image_dir,
                         "images/mscoco/images/train2014",
                         item["file_name"],
                     )

@@ -279,10 +279,18 @@ class AffordanceVLMForCausalLM(LlavaLlamaForCausalLM):
                 masks=None,
                 text_embeds=pred_embeddings[i].unsqueeze(1),
             )
-            sparse_embeddings = sparse_embeddings.to(pred_embeddings[i].dtype)
+            decoder_dtype = next(
+                self.model.visual_model.mask_decoder.parameters()
+            ).dtype
+            sparse_embeddings = sparse_embeddings.to(decoder_dtype)
+            dense_embeddings = dense_embeddings.to(decoder_dtype)
+            image_embedding = image_embeddings[i].unsqueeze(0).to(decoder_dtype)
+            image_pe = self.model.visual_model.prompt_encoder.get_dense_pe().to(
+                decoder_dtype
+            )
             low_res_masks, iou_predictions = self.model.visual_model.mask_decoder(
-                image_embeddings=image_embeddings[i].unsqueeze(0),
-                image_pe=self.model.visual_model.prompt_encoder.get_dense_pe(),
+                image_embeddings=image_embedding,
+                image_pe=image_pe,
                 sparse_prompt_embeddings=sparse_embeddings,
                 dense_prompt_embeddings=dense_embeddings,
                 multimask_output=multimask_output,
@@ -410,10 +418,18 @@ class AffordanceVLMForCausalLM(LlavaLlamaForCausalLM):
                     text_embeds=pred_embeddings[i].unsqueeze(1),
                 )
 
-                sparse_embeddings = sparse_embeddings.to(pred_embeddings[i].dtype)
+                decoder_dtype = next(
+                    self.model.visual_model.mask_decoder.parameters()
+                ).dtype
+                sparse_embeddings = sparse_embeddings.to(decoder_dtype)
+                dense_embeddings = dense_embeddings.to(decoder_dtype)
+                image_embedding = image_embeddings[i].unsqueeze(0).to(decoder_dtype)
+                image_pe = self.model.visual_model.prompt_encoder.get_dense_pe().to(
+                    decoder_dtype
+                )
                 low_res_masks, iou_predictions = self.model.visual_model.mask_decoder(
-                    image_embeddings=image_embeddings[i].unsqueeze(0),
-                    image_pe=self.model.visual_model.prompt_encoder.get_dense_pe(),
+                    image_embeddings=image_embedding,
+                    image_pe=image_pe,
                     sparse_prompt_embeddings=sparse_embeddings,
                     dense_prompt_embeddings=dense_embeddings,
                     multimask_output=multimask_output,
